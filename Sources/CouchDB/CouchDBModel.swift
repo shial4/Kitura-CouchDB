@@ -18,6 +18,6 @@ import Foundation
 
 // MARK: CouchDBModel
 public protocol CouchDBModel where Self: Codable {
-    var id: String? { get set }
-    var rev: String? { get set }
+    var _id: String? { get set }
+    var _rev: String? { get set }
 }

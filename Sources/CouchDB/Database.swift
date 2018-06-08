@@ -21,13 +21,20 @@ import KituraNet
 
 /// Represents a CouchDB database.
 public class Database {
-    private struct BulkUpdate<T: Codable>: Codable {
+    private struct BulkUpdate<T: Encodable>: Encodable {
         var new_edits: Bool
         var docs: [T]
         init(docs: [T], newEdits: Bool) {
             self.docs = docs
             self.new_edits = newEdits
         }
+    }
+    
+    public struct BulkResponse: Decodable {
+        var _id: String?
+        var _rev: String?
+        var error: String?
+        var reason: String?
     }
     
     /// Indicates when to update.
@@ -157,7 +164,7 @@ public class Database {
     /// - parameters:
     ///     - id: String ID for the document.
     ///     - callback: Callback containing the document JSON or an NSError if one occurred.
-    public func retrieve<T: Codable>(_ id: String, callback: @escaping (T?, NSError?) -> ()) {
+    public func retrieve<T: Decodable>(_ id: String, callback: @escaping (T?, NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "GET",
                                                          path: "/\(escapedName)/\(HTTP.escape(url: id))", hasBody: false)
         var document: T?
@@ -191,7 +198,7 @@ public class Database {
     ///     - includeDocuments: Bool indicating whether to return the full contents of the documents.
     ///                         Defaults to `false`.
     ///     - callback: Callback containing the documents JSON or an NSError if one occurred.
-    public func retrieveAll<T: Codable>(includeDocuments: Bool = false, callback: @escaping (T?, NSError?) -> ()) {
+    public func retrieveAll<T: Decodable>(includeDocuments: Bool = false, callback: @escaping (T?, NSError?) -> ()) {
         var path = "/\(escapedName)/_all_docs"
         if includeDocuments {
             path += "?include_docs=true"
@@ -258,7 +265,7 @@ public class Database {
 	///                   results are returned in the same order as the supplied documents array.
 	/// - Parameter error: Request error if one occurred.
 	///
-    public func bulk<T: Codable>(documents: [T], newEdits: Bool = true, callback: @escaping (_ json: T?, _ error: NSError?) -> ()) {
+    public func bulk<T: Encodable>(documents: [T], newEdits: Bool = true, callback: @escaping (_ json: BulkResponse?, _ error: NSError?) -> ()) {
 		// Prepare request options
 		let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "POST", path: "/\(escapedName)/_bulk_docs", hasBody: true)
 
@@ -268,7 +275,7 @@ public class Database {
 		// Create bulk update request and send it
 		let req = HTTP.request(requestOptions) { response in
 			var error: NSError?
-			var documentsUpdateResult: T?
+			var documentsUpdateResult: BulkResponse?
 
 			if let response = response {
                 do {
@@ -425,7 +432,7 @@ public class Database {
     ///     - params: Query parameters for the function.
     ///     - callback: Callback containing the JSON response or NSError if one occurred.
     ///                 Refer to http://docs.couchdb.org/en/2.1.0/api/ddoc/views.html for info on JSON contents.
-    public func queryByView<T: Codable>(_ view: String, ofDesign design: String, usingParameters params: [Database.QueryParameters], callback: @escaping (T?, NSError?) -> ()) {
+    public func queryByView<T: Decodable>(_ view: String, ofDesign design: String, usingParameters params: [Database.QueryParameters], callback: @escaping (T?, NSError?) -> ()) {
         var paramString = ""
         var keys: [KeyType]?
 

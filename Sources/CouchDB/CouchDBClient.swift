@@ -21,7 +21,7 @@ import KituraNet
 
 /// Callback for _session requests, containing the session cookie, the JSON response,
 /// and NSError if one occurred.
-public typealias SessionCallback<T: Codable> = (String?, T?, NSError?) -> ()
+public typealias SessionCallback<T: Decodable> = (String?, T?, NSError?) -> ()
 
 /// Represents a CouchDB connection.
 public class CouchDBClient {
@@ -207,7 +207,7 @@ public class CouchDBClient {
     ///     - keyPath: The configuration parameter String to update.
     ///     - value: The `CouchDBValue` to set the configuration parameter to.
     ///     - callback: Callback containing an NSError if one occurred.
-    public func setConfig<T: Codable>(keyPath: String, value: T, callback: @escaping (NSError?) -> ()) {
+    public func setConfig<T: Encodable>(keyPath: String, value: T, callback: @escaping (NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "PUT",
                                                          path: "/_config/\(keyPath)",
@@ -239,7 +239,7 @@ public class CouchDBClient {
     ///     - keyPath: The configuration parameter String to get the value for.
     ///     - callback: Callback containing the JSON return value for the configuration parameter,
     ///                 or an NSError if one occurred.
-    public func getConfig<T: Codable>(keyPath: String, callback: @escaping (T?, NSError?) -> ()) {
+    public func getConfig<T: Decodable>(keyPath: String, callback: @escaping (T?, NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "GET",
                                                          path: "/_config/\(keyPath)",
@@ -272,7 +272,7 @@ public class CouchDBClient {
     ///     - password: Password String.
     ///     - callback: `SessionCallback` containing the session cookie and JSON response,
     ///                 or an NSError if one occurred.
-    public func createSession<T: Codable>(name: String, password: String, callback: @escaping SessionCallback<T>) {
+    public func createSession<T: Decodable>(name: String, password: String, callback: @escaping SessionCallback<T>) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "POST",
                                                          path: "/_session",
@@ -314,7 +314,7 @@ public class CouchDBClient {
     ///     - cookie: String session cookie.
     ///     - callback: `SessionCallback` containing the cookie, JSON response,
     ///                 and an NSError if the user is not authenticated or an error occurred.
-    public func getSession<T: Codable>(cookie: String, callback: @escaping SessionCallback<T>) {
+    public func getSession<T: Decodable>(cookie: String, callback: @escaping SessionCallback<T>) {
         var requestOptions: [ClientRequest.Options] = []
         requestOptions.append(.hostname(connProperties.host))
         requestOptions.append(.port(connProperties.port))
@@ -358,7 +358,7 @@ public class CouchDBClient {
     ///     - cookie: String session cookie.
     ///     - callback: `SessionCallback` containing the cookie, JSON response,
     ///                 and NSError if one occurred.
-    public func deleteSession<T: Codable>(cookie: String, callback: @escaping SessionCallback<T>) {
+    public func deleteSession<T: Decodable>(cookie: String, callback: @escaping SessionCallback<T>) {
         var requestOptions: [ClientRequest.Options] = []
         requestOptions.append(.hostname(connProperties.host))
         requestOptions.append(.port(connProperties.port))

@@ -82,7 +82,7 @@ class CouchDBUtils {
         return requestOptions
     }
 
-    class func getBodyObject<T: Codable>(_ response: ClientResponse) throws -> T {
+    class func getBodyObject<T: Decodable>(_ response: ClientResponse) throws -> T {
         var body = Data()
         try response.readAllData(into: &body)
         let object = try JSONDecoder().decode(T.self, from: body)

@@ -15,7 +15,6 @@
  **/
 
 import Foundation
-import SwiftyJSON
 import KituraNet
 
 // MARK: Users Database
@@ -23,7 +22,17 @@ import KituraNet
 /// Represents a CouchDB database of users.
 public class UsersDatabase: Database {
 
-    typealias JSONDictionary = [String: Any]
+    public struct User: Codable {
+        public var name: String
+        public var password: String
+        public var type: String = "user"
+        public var roles: [String] = []
+        
+        public init(name: String, password: String) {
+            self.name = name
+            self.password = password
+        }
+    }
 
     /// Create new user by name and password.
     ///
@@ -32,32 +41,39 @@ public class UsersDatabase: Database {
     ///     - password: Password String.
     ///     - callback: Callback containing the username, JSON response,
     ///                 and an NSError if one occurred.
-    public func createUser(document: JSON, callback: @escaping (String?, JSON?, NSError?) -> ()) {
-        if let requestBody = document.rawString(), let name = document["name"].string {
-            let id = "org.couchdb.user:\(name)"
-            var doc: JSON?
-            let requestOptions = CouchDBUtils.prepareRequest(connProperties,
-                                                             method: "PUT",
-                                                             path: "/_users/\(id)",
-                                                             hasBody: true,
-                                                             contentType: "application/json")
-            let req = HTTP.request(requestOptions) { response in
-                var error: NSError?
-                if let response = response {
-                    doc = CouchDBUtils.getBodyAsJson(response)
+    public func createUser(_ document: User, callback: @escaping (String?, User?, NSError?) -> ()) {
+        let id = "org.couchdb.user:\(document.name)"
+        var doc: User?
+        let requestOptions = CouchDBUtils.prepareRequest(connProperties,
+                                                         method: "PUT",
+                                                         path: "/_users/\(id)",
+            hasBody: true,
+            contentType: "application/json")
+        let req = HTTP.request(requestOptions) { response in
+            var error: NSError?
+            if let response = response {
+                do {
                     if response.statusCode != HTTPStatusCode.created && response.statusCode != HTTPStatusCode.accepted {
-                        error = CouchDBUtils.createError(response.statusCode, errorDesc: doc, id: id, rev: nil)
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: id, rev: nil)
+                    } else {
+                        doc = try CouchDBUtils.getBodyObject(response)
                     }
-                } else {
-                    error = CouchDBUtils.createError(Database.InternalError, id: id, rev: nil)
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-                callback(id, doc, error)
+            } else {
+                error = CouchDBUtils.createError(Database.InternalError, id: id, rev: nil)
             }
-            req.end(requestBody)
-        } else {
-            callback(nil,
-                     nil,
-                     CouchDBUtils.createError(Database.InvalidDocument, id: nil, rev: nil))
+            callback(id, doc, error)
+        }
+        do {
+            req.end(try JSONEncoder().encode(document))
+        } catch _ {
+            req.end()
         }
     }
 
@@ -66,17 +82,13 @@ public class UsersDatabase: Database {
     /// - parameters:
     ///     - name: Name String of the desired user.
     ///     - callback: Callback containing the user JSON, or an NSError if one occurred.
-    public func getUser(name: String, callback: @escaping (JSON?, NSError?) -> ()) {
+    public func getUser(name: String, callback: @escaping (User?, NSError?) -> ()) {
         let id = "org.couchdb.user:\(name)"
-        retrieve(id, callback: { (doc, error) in
-            var json = JSONDictionary()
-            if let document = doc, error == nil {
-                json["user"] = document.object
-            }
+        retrieve(id, callback: { (doc: User?, error) in
             #if os(Linux)
-                callback(JSON(json), error)
+                callback(doc, error)
             #else
-                callback(JSON(json as AnyObject), error)
+                callback(doc, error)
             #endif
         })
     }

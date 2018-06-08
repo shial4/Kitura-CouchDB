@@ -16,7 +16,11 @@
 
 import Foundation
 import KituraNet
-import SwiftyJSON
+
+public struct RequestError: Codable {
+    var error: String
+    var reason: String
+}
 
 class CouchDBUtils {
     static let couchDBDomain = "CouchDBDomain"
@@ -47,8 +51,8 @@ class CouchDBUtils {
         return NSError(domain: couchDBDomain, code: code, userInfo: info)
     }
 
-    class func createError(_ code: HTTPStatusCode, errorDesc: JSON?, id: String?, rev: String?) -> NSError {
-        if let errorDesc = errorDesc, let err = errorDesc["error"].string, let reason = errorDesc["reason"].string {
+    class func createError(_ code: HTTPStatusCode, errorDesc: RequestError?, id: String?, rev: String?) -> NSError {
+        if let err = errorDesc?.error, let reason = errorDesc?.reason {
             return createError(code.rawValue, desc: "Error: \(err), reason: \(reason)", id: id, rev: nil)
         }
         return createError(code, id: id, rev: rev)
@@ -78,19 +82,14 @@ class CouchDBUtils {
         return requestOptions
     }
 
-    class func getBodyAsJson (_ response: ClientResponse) -> JSON? {
-        do {
-            var body = Data()
-            try response.readAllData(into: &body)
-            let json = JSON(data: body)
-            return json
-        } catch {
-            //Log this exception
-        }
-        return nil
+    class func getBodyObject<T: Codable>(_ response: ClientResponse) throws -> T {
+        var body = Data()
+        try response.readAllData(into: &body)
+        let object = try JSONDecoder().decode(T.self, from: body)
+        return object
     }
 
-    class func getBodyAsData (_ response: ClientResponse) -> Data? {
+    class func getBodyAsData(_ response: ClientResponse) -> Data? {
         do {
             var body = Data()
             try response.readAllData(into: &body)

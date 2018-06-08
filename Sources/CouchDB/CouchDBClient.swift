@@ -15,21 +15,13 @@
  **/
 
 import Foundation
-import SwiftyJSON
 import KituraNet
 
 // MARK: CouchDBClient
 
-#if os(OSX)
-    /// Represents a CouchDB configuration value.
-    public typealias CouchDBValue = AnyObject
-#else
-    public typealias CouchDBValue = Any
-#endif
-
 /// Callback for _session requests, containing the session cookie, the JSON response,
 /// and NSError if one occurred.
-public typealias SessionCallback = (String?, JSON?, NSError?) -> ()
+public typealias SessionCallback<T: Codable> = (String?, T?, NSError?) -> ()
 
 /// Represents a CouchDB connection.
 public class CouchDBClient {
@@ -71,11 +63,15 @@ public class CouchDBClient {
                 if response.statusCode == .created {
                     db = Database(connProperties: self.connProperties, dbName: dbName)
                 } else {
-                    if let descOpt = try? response.readString(), let desc = descOpt {
+                    do {
                         error = CouchDBUtils.createError(response.statusCode,
-                                                         errorDesc: JSON.parse(string: desc), id: nil, rev: nil)
-                    } else {
-                        error = CouchDBUtils.createError(response.statusCode, id: nil, rev: nil)
+                                                         errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    }  catch let caughtError {
+                        #if os(Linux)
+                        error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                        #else
+                        error = caughtError as NSError
+                        #endif
                     }
                 }
             } else {
@@ -130,11 +126,15 @@ public class CouchDBClient {
             var error: NSError?
             if let response = response {
                 if response.statusCode != HTTPStatusCode.OK {
-                    if let descOpt = try? response.readString(), let desc = descOpt {
+                    do {
                         error = CouchDBUtils.createError(response.statusCode,
-                                                         errorDesc: JSON.parse(string: desc), id: nil, rev: nil)
-                    } else {
-                        error = CouchDBUtils.createError(response.statusCode, id: nil, rev: nil)
+                                                         errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    }  catch let caughtError {
+                        #if os(Linux)
+                        error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                        #else
+                        error = caughtError as NSError
+                        #endif
                     }
                 }
             } else {
@@ -151,7 +151,10 @@ public class CouchDBClient {
     ///     - count: The number of UUIDs to get.
     ///     - callback: Callback containing an array of UUIDs or an NSError if one occured.
     public func getUUIDs(count : UInt, callback : @escaping ([String]?, NSError?) -> Void) {
-
+        struct UUIDs: Codable {
+            var uuids: [String]
+        }
+        
         let url = "/_uuids?count=\(count)"
 
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "GET",
@@ -161,27 +164,14 @@ public class CouchDBClient {
             var uuids: [String]?
             if let response = response {
                 if response.statusCode == HTTPStatusCode.OK {
-
                     var data = Data()
                     do {
                         try response.readAllData(into: &data)
-
-                        let responseJSON = JSON(data: data)
-
-                        let uuidsJSON = responseJSON["uuids"]
-
-                        #if swift(>=4.1)
-                        uuids = uuidsJSON.array?.compactMap({ (uuidJSON) -> String? in
-                            return uuidJSON.string
-                        })
-                        #else
-                        uuids = uuidsJSON.array?.flatMap({ (uuidJSON) -> String? in
-                            return uuidJSON.string
-                        })
-                        #endif
+                        let responseObject = try JSONDecoder().decode(UUIDs.self, from: data)
+                        uuids = responseObject.uuids
                     } catch let caughtError {
                         #if os(Linux)
-                            error = NSError(domain: caughtError.localizedDescription, code: -1)
+                            error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
                         #else
                             error = caughtError as NSError
                         #endif
@@ -217,7 +207,7 @@ public class CouchDBClient {
     ///     - keyPath: The configuration parameter String to update.
     ///     - value: The `CouchDBValue` to set the configuration parameter to.
     ///     - callback: Callback containing an NSError if one occurred.
-    public func setConfig(keyPath: String, value: CouchDBValue, callback: @escaping (NSError?) -> ()) {
+    public func setConfig<T: Codable>(keyPath: String, value: T, callback: @escaping (NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "PUT",
                                                          path: "/_config/\(keyPath)",
@@ -232,16 +222,14 @@ public class CouchDBClient {
             }
             callback(configError)
         }
-        #if os(Linux)
-            let body = JSON("\"\(value)\"")
-        #else
-            let body = JSON("\"\(value)\"" as NSString)
-        #endif
-
-        if let body = body.rawString() {
-            req.end(body)
-        } else {
-            req.end()
+        do {
+            req.end(try JSONEncoder().encode(value))
+        } catch let caughtError {
+            #if os(Linux)
+            callback(NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(caughtError as NSError)
+            #endif
         }
     }
 
@@ -251,7 +239,7 @@ public class CouchDBClient {
     ///     - keyPath: The configuration parameter String to get the value for.
     ///     - callback: Callback containing the JSON return value for the configuration parameter,
     ///                 or an NSError if one occurred.
-    public func getConfig(keyPath: String, callback: @escaping (JSON?, NSError?) -> ()) {
+    public func getConfig<T: Codable>(keyPath: String, callback: @escaping (T?, NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "GET",
                                                          path: "/_config/\(keyPath)",
@@ -259,22 +247,19 @@ public class CouchDBClient {
                                                          contentType: "application/json")
         let req = HTTP.request(requestOptions) { response in
             var configError: NSError?
-            var configJSON: JSON?
+            var config: T?
             if let response = response {
                 do {
-                    let body = try response.readString()
-                    if let body = body {
-                        #if os(Linux)
-                            configJSON = JSON(body)
-                        #else
-                            configJSON = JSON(body as NSString)
-                        #endif
-                    }
-                } catch {
-                    configError = CouchDBUtils.createError(response.statusCode, id: nil, rev: nil)
+                    config = try CouchDBUtils.getBodyObject(response)
+                } catch let caughtError {
+                    #if os(Linux)
+                    configError = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    configError = caughtError as NSError
+                    #endif
                 }
             }
-            callback(configJSON, configError)
+            callback(config, configError)
         }
 
         req.end()
@@ -287,7 +272,7 @@ public class CouchDBClient {
     ///     - password: Password String.
     ///     - callback: `SessionCallback` containing the session cookie and JSON response,
     ///                 or an NSError if one occurred.
-    public func createSession(name: String, password: String, callback: @escaping SessionCallback) {
+    public func createSession<T: Codable>(name: String, password: String, callback: @escaping SessionCallback<T>) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "POST",
                                                          path: "/_session",
@@ -298,15 +283,22 @@ public class CouchDBClient {
 
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
-            var document: JSON?
+            var document: T?
             var cookie: String?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: id, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: id, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-
                 cookie = response.headers["Set-Cookie"]?.first
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: id, rev: nil)
@@ -322,7 +314,7 @@ public class CouchDBClient {
     ///     - cookie: String session cookie.
     ///     - callback: `SessionCallback` containing the cookie, JSON response,
     ///                 and an NSError if the user is not authenticated or an error occurred.
-    public func getSession(cookie: String, callback: @escaping SessionCallback) {
+    public func getSession<T: Codable>(cookie: String, callback: @escaping SessionCallback<T>) {
         var requestOptions: [ClientRequest.Options] = []
         requestOptions.append(.hostname(connProperties.host))
         requestOptions.append(.port(connProperties.port))
@@ -337,12 +329,20 @@ public class CouchDBClient {
 
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
-            var document: JSON?
+            var document: T?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: nil, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                }  catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: -1)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
@@ -358,7 +358,7 @@ public class CouchDBClient {
     ///     - cookie: String session cookie.
     ///     - callback: `SessionCallback` containing the cookie, JSON response,
     ///                 and NSError if one occurred.
-    public func deleteSession(cookie: String, callback: @escaping SessionCallback) {
+    public func deleteSession<T: Codable>(cookie: String, callback: @escaping SessionCallback<T>) {
         var requestOptions: [ClientRequest.Options] = []
         requestOptions.append(.hostname(connProperties.host))
         requestOptions.append(.port(connProperties.port))
@@ -373,15 +373,22 @@ public class CouchDBClient {
 
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
-            var document: JSON?
+            var document: T?
             var cookie: String?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: nil, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                }  catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: -1)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-
                 cookie = response.headers["Set-Cookie"]?.first
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)

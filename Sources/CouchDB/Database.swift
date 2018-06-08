@@ -15,13 +15,21 @@
  **/
 
 import Foundation
-import SwiftyJSON
 import KituraNet
 
 // MARK: Database
 
 /// Represents a CouchDB database.
 public class Database {
+    private struct BulkUpdate<T: Codable>: Codable {
+        var new_edits: Bool
+        var docs: [T]
+        init(docs: [T], newEdits: Bool) {
+            self.docs = docs
+            self.new_edits = newEdits
+        }
+    }
+    
     /// Indicates when to update.
     public enum StaleOptions {
         /// CouchDB will not refresh the view even if it is stale.
@@ -30,12 +38,7 @@ public class Database {
         case updateAfter
     }
 
-    #if os(Linux)
-    public typealias KeyType = Any
-    #else
-    /// Typealias used for building query parameters in view functions.
-    public typealias KeyType = AnyObject
-    #endif
+    public typealias KeyType = Encodable
 
     /// Query parameters for view functions from design documents.
     public enum QueryParameters {
@@ -154,16 +157,25 @@ public class Database {
     /// - parameters:
     ///     - id: String ID for the document.
     ///     - callback: Callback containing the document JSON or an NSError if one occurred.
-    public func retrieve(_ id: String, callback: @escaping (JSON?, NSError?) -> ()) {
+    public func retrieve<T: Codable>(_ id: String, callback: @escaping (T?, NSError?) -> ()) {
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "GET",
                                                          path: "/\(escapedName)/\(HTTP.escape(url: id))", hasBody: false)
-        var document: JSON?
+        var document: T?
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: id, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: id, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: id, rev: nil)
@@ -179,20 +191,29 @@ public class Database {
     ///     - includeDocuments: Bool indicating whether to return the full contents of the documents.
     ///                         Defaults to `false`.
     ///     - callback: Callback containing the documents JSON or an NSError if one occurred.
-    public func retrieveAll(includeDocuments: Bool = false, callback: @escaping (JSON?, NSError?) -> ()) {
+    public func retrieveAll<T: Codable>(includeDocuments: Bool = false, callback: @escaping (T?, NSError?) -> ()) {
         var path = "/\(escapedName)/_all_docs"
         if includeDocuments {
             path += "?include_docs=true"
         }
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "GET",
                                                          path: path, hasBody: false)
-        var document: JSON?
+        var document: T?
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: nil, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
@@ -237,33 +258,46 @@ public class Database {
 	///                   results are returned in the same order as the supplied documents array.
 	/// - Parameter error: Request error if one occurred.
 	///
-	public func bulk(documents: [JSON], newEdits: Bool = true, callback: @escaping (_ json: JSON?, _ error: NSError?) -> ()) {
-
+    public func bulk<T: Codable>(documents: [T], newEdits: Bool = true, callback: @escaping (_ json: T?, _ error: NSError?) -> ()) {
 		// Prepare request options
 		let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "POST", path: "/\(escapedName)/_bulk_docs", hasBody: true)
 
-		// Create request body and check if it was generated successfully
-		guard let requestBody = JSON(["docs": JSON(documents), "new_edits": JSON(newEdits)]).rawString() else {
-			callback(nil, CouchDBUtils.createError(Database.InvalidDocument, id: nil, rev: nil))
-			return
-		}
+		// Create request body
+		let requestBody = BulkUpdate(docs: documents, newEdits: newEdits)
 
 		// Create bulk update request and send it
 		let req = HTTP.request(requestOptions) { response in
 			var error: NSError?
-			var documentsUpdateResult: JSON?
+			var documentsUpdateResult: T?
 
 			if let response = response {
-				documentsUpdateResult = CouchDBUtils.getBodyAsJson(response)
-				if response.statusCode != HTTPStatusCode.created {
-					error = CouchDBUtils.createError(response.statusCode, errorDesc: documentsUpdateResult, id: nil, rev: nil)
-				}
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        documentsUpdateResult = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
+                }
 			} else {
 				error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
 			}
 			callback(documentsUpdateResult, error)
 		}
-		req.end(requestBody)
+        do {
+            req.end(try JSONEncoder().encode(requestBody))
+        } catch let caughtError {
+            #if os(Linux)
+            callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(nil,caughtError as NSError)
+            #endif
+        }
 	}
 
 	/// Update a document in the database.
@@ -274,29 +308,39 @@ public class Database {
     ///     - document: JSON data of the updated document.
     ///     - callback: Callback containing the new revision number, the JSON response,
     ///                 and NSError if one occurred.
-    public func update(_ id: String, rev: String, document: JSON, callback: @escaping (String?, JSON?, NSError?) -> ()) {
-        if let requestBody = document.rawString() {
-            var doc: JSON?
-            var revision: String?
-            let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "PUT",
-                                                             path: "/\(escapedName)/\(HTTP.escape(url: id))?rev=\(HTTP.escape(url: rev))", hasBody: true)
-            let req = HTTP.request(requestOptions) { response in
-                var error: NSError?
-                if let response = response {
-                    doc = CouchDBUtils.getBodyAsJson(response)
-                    revision = doc?["rev"].string
+    public func update<T: CouchDBModel>(_ id: String, rev: String, document: T, callback: @escaping (T?, NSError?) -> ()) {
+        var doc: T?
+        let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "PUT",
+                                                         path: "/\(escapedName)/\(HTTP.escape(url: id))?rev=\(HTTP.escape(url: rev))", hasBody: true)
+        let req = HTTP.request(requestOptions) { response in
+            var error: NSError?
+            if let response = response {
+                do {
                     if response.statusCode != .created && response.statusCode != .accepted {
-                        error = CouchDBUtils.createError(response.statusCode, errorDesc: doc, id: id, rev: rev)
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: id, rev: rev)
+                    } else {
+                        doc = try CouchDBUtils.getBodyObject(response)
                     }
-                } else {
-                    error = CouchDBUtils.createError(Database.InternalError, id: id, rev: rev)
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-                callback(revision, doc, error)
+            } else {
+                error = CouchDBUtils.createError(Database.InternalError, id: id, rev: rev)
             }
-            req.end(requestBody)
-        } else {
-            callback(nil, nil,
-                     CouchDBUtils.createError(Database.InvalidDocument, id: id, rev: rev))
+            callback(doc, error)
+        }
+        do {
+            req.end(try JSONEncoder().encode(document))
+        } catch let caughtError {
+            #if os(Linux)
+            callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(nil,caughtError as NSError)
+            #endif
         }
     }
 
@@ -306,29 +350,38 @@ public class Database {
     ///     - document: JSON data for the document.
     ///     - callback: Callback containing the ID of the newly created document, revision number,
     ///                 JSON response, and NSError if one occurred.
-    public func create(_ document: JSON, callback: @escaping (String?, String?, JSON?, NSError?) -> ()) {
-        if let requestBody = document.rawString() {
-            var id: String?
-            var doc: JSON?
-            var revision: String?
-            let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "POST", path: "/\(escapedName)", hasBody: true)
-            let req = HTTP.request(requestOptions) { response in
-                var error: NSError?
-                if let response = response {
-                    doc = CouchDBUtils.getBodyAsJson(response)
-                    id = doc?["id"].string
-                    revision = doc?["rev"].string
+    public func create<T: CouchDBModel>(_ document: T, callback: @escaping (T?, NSError?) -> ()) {
+        var doc: T?
+        let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "POST", path: "/\(escapedName)", hasBody: true)
+        let req = HTTP.request(requestOptions) { response in
+            var error: NSError?
+            if let response = response {
+                do {
                     if response.statusCode != .created && response.statusCode != .accepted {
-                        error = CouchDBUtils.createError(response.statusCode, errorDesc: doc, id: nil, rev: nil)
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        doc = try CouchDBUtils.getBodyObject(response)
                     }
-                } else {
-                    error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-                callback(id, revision, doc, error)
+            } else {
+                error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
             }
-            req.end(requestBody)
-        } else {
-            callback(nil, nil, nil, CouchDBUtils.createError(Database.InvalidDocument, id: nil, rev: nil))
+            callback(doc, error)
+        }
+        do {
+            req.end(try JSONEncoder().encode(document))
+        } catch let caughtError {
+            #if os(Linux)
+            callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(nil,caughtError as NSError)
+            #endif
         }
     }
 
@@ -344,9 +397,17 @@ public class Database {
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                if (response.statusCode != .OK && response.statusCode != .accepted) ||
-                    (response.statusCode == .notFound && failOnNotFound) {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: CouchDBUtils.getBodyAsJson(response), id: id, rev: rev)
+                do {
+                    if (response.statusCode != .OK && response.statusCode != .accepted) ||
+                        (response.statusCode == .notFound && failOnNotFound) {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: id, rev: rev)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: id, rev: rev)
@@ -364,7 +425,7 @@ public class Database {
     ///     - params: Query parameters for the function.
     ///     - callback: Callback containing the JSON response or NSError if one occurred.
     ///                 Refer to http://docs.couchdb.org/en/2.1.0/api/ddoc/views.html for info on JSON contents.
-    public func queryByView(_ view: String, ofDesign design: String, usingParameters params: [Database.QueryParameters], callback: @escaping (JSON?, NSError?) -> ()) {
+    public func queryByView<T: Codable>(_ view: String, ofDesign design: String, usingParameters params: [Database.QueryParameters], callback: @escaping (T?, NSError?) -> ()) {
         var paramString = ""
         var keys: [KeyType]?
 
@@ -439,36 +500,48 @@ public class Database {
 
         var method = "GET"
         var hasBody = false
-        var body: JSON?
+        var body: [String:[KeyType]]?
         if let keys = keys {
             method = "POST"
             hasBody = true
-            #if os(Linux)
-                body = JSON(["keys": keys])
-            #else
-                body = JSON(["keys": keys] as AnyObject)
-            #endif
+            body = ["keys": keys]
         }
 
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: method, path: "/\(escapedName)/_design/\(HTTP.escape(url: design))/_view/\(HTTP.escape(url: view))\(paramString)", hasBody: hasBody)
-        var document: JSON?
+        var document: T?
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                document = CouchDBUtils.getBodyAsJson(response)
-                if response.statusCode != HTTPStatusCode.OK {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: document, id: nil, rev: nil)
+                do {
+                    if response.statusCode != HTTPStatusCode.OK {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        document = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
             }
             callback(document, error)
         }
-
-        if let _ = body, let bodyAsString = body!.rawString() {
-            req.end(bodyAsString)
-        } else {
-            req.end()
+        do {
+            if let body = body {
+                req.end(try JSONSerialization.data(withJSONObject: body))
+            } else {
+                req.end()
+            }
+        } catch let caughtError {
+            #if os(Linux)
+            callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(nil,caughtError as NSError)
+            #endif
         }
     }
 
@@ -478,25 +551,38 @@ public class Database {
     ///     - designName: Name String for the design document.
     ///     - document: The JSON data of the new design document.
     ///     - callback: Callback containing the JSON response or an NSError if one occurred.
-    public func createDesign(_ designName: String, document: JSON, callback: @escaping (JSON?, NSError?) -> ()) {
-        if let requestBody = document.rawString() {
-            var doc: JSON?
-            let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "PUT", path: "/\(escapedName)/_design/\(HTTP.escape(url: designName))", hasBody: true)
-            let req = HTTP.request(requestOptions) { response in
-                var error: NSError?
-                if let response = response {
-                    doc = CouchDBUtils.getBodyAsJson(response)
+    public func createDesign<T: Codable>(_ designName: String, document: T, callback: @escaping (T?, NSError?) -> ()) {
+        var doc: T?
+        let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "PUT", path: "/\(escapedName)/_design/\(HTTP.escape(url: designName))", hasBody: true)
+        let req = HTTP.request(requestOptions) { response in
+            var error: NSError?
+            if let response = response {
+                do {
                     if response.statusCode != .created && response.statusCode != .accepted {
-                        error = CouchDBUtils.createError(response.statusCode, errorDesc: doc, id: nil, rev: nil)
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: nil, rev: nil)
+                    } else {
+                        doc = try CouchDBUtils.getBodyObject(response)
                     }
-                } else {
-                    error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
-                callback(doc, error)
+            } else {
+                error = CouchDBUtils.createError(Database.InternalError, id: nil, rev: nil)
             }
-            req.end(requestBody)
-        } else {
-            callback(nil, CouchDBUtils.createError(Database.InvalidDocument, id: designName, rev: nil))
+            callback(doc, error)
+        }
+        do {
+            req.end(try JSONEncoder().encode(document))
+        } catch let caughtError {
+            #if os(Linux)
+            callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
+            #else
+            callback(nil,caughtError as NSError)
+            #endif
         }
     }
 
@@ -512,9 +598,17 @@ public class Database {
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                if (response.statusCode != .OK && response.statusCode != .accepted)
-                    || (response.statusCode == .notFound && failOnNotFound) {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: CouchDBUtils.getBodyAsJson(response), id: designName, rev: revision)
+                do {
+                    if (response.statusCode != .OK && response.statusCode != .accepted)
+                        || (response.statusCode == .notFound && failOnNotFound) {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: designName, rev: revision)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: designName, rev: revision)
@@ -534,22 +628,29 @@ public class Database {
     ///     - contentType: Attachment MIME type String.
     ///     - callback: Callback containing the new revision String, the JSON response,
     ///                 and an NSError if one occurred.
-    public func createAttachment(_ docId: String, docRevison: String, attachmentName: String, attachmentData: Data, contentType: String, callback: @escaping (String?, JSON?, NSError?) -> ()) {
-        var doc: JSON?
-        var revision: String?
+    public func createAttachment<T: CouchDBModel>(_ docId: String, docRevison: String, attachmentName: String, attachmentData: Data, contentType: String, callback: @escaping (T?, NSError?) -> ()) {
+        var doc: T?
         let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "PUT", path: "/\(escapedName)/\(HTTP.escape(url: docId))/\(HTTP.escape(url: attachmentName))?rev=\(HTTP.escape(url: docRevison))", hasBody: true, contentType: contentType)
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                doc = CouchDBUtils.getBodyAsJson(response)
-                revision = doc?["rev"].string
-                if response.statusCode != .created && response.statusCode != .accepted {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: doc, id: docId, rev: docRevison)
+                do {
+                    if response.statusCode != .created && response.statusCode != .accepted {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: docId, rev: docRevison)
+                    } else {
+                        doc = try CouchDBUtils.getBodyObject(response)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: docId, rev: docRevison)
             }
-            callback(revision, doc, error)
+            callback(doc, error)
         }
         req.end(attachmentData)
     }
@@ -594,9 +695,17 @@ public class Database {
         let req = HTTP.request(requestOptions) { response in
             var error: NSError?
             if let response = response {
-                if (response.statusCode != .OK && response.statusCode != .accepted)
-                    || (response.statusCode == .notFound && failOnNotFound) {
-                    error = CouchDBUtils.createError(response.statusCode, errorDesc: CouchDBUtils.getBodyAsJson(response), id: docId, rev: docRevison)
+                do {
+                    if (response.statusCode != .OK && response.statusCode != .accepted)
+                        || (response.statusCode == .notFound && failOnNotFound) {
+                        error = CouchDBUtils.createError(response.statusCode, errorDesc: try CouchDBUtils.getBodyObject(response), id: docId, rev: docRevison)
+                    }
+                } catch let caughtError {
+                    #if os(Linux)
+                    error = NSError(domain: caughtError.localizedDescription, code: response.statusCode)
+                    #else
+                    error = caughtError as NSError
+                    #endif
                 }
             } else {
                 error = CouchDBUtils.createError(Database.InternalError, id: docId, rev: docRevison)

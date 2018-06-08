@@ -21,7 +21,6 @@
 #endif
 
 import Foundation
-import SwiftyJSON
 import CouchDB
 import LoggerAPI
 import HeliumLogger
@@ -117,28 +116,24 @@ typealias valuetype = Any
 typealias valuetype = AnyObject
 #endif
 
-// JSON document in string format
-let jsonDict: [String: valuetype] = [
-    "_id": documentId,
-    "truncated": false as valuetype,
-    "created_at": "Tue Aug 28 21:16:23 +0000 2012" as valuetype,
-    "favorited": false as valuetype,
-    "value": "value1" as valuetype
-]
-#if os(Linux)
-let json = JSON(jsonDict)
-#else
-let json = JSON(jsonDict as AnyObject)
-#endif
+struct ObjectDB: Codable, CouchDBModel {
+    var _id: String? = documentId as String
+    var _rev: String?
+    var truncated: Bool = false
+    var created_at: String = "Tue Aug 28 21:16:23 +0000 2012"
+    var favorited: Bool = false
+    var value: String = "value1"
+}
 
+let objectDB = ObjectDB()
 
 // MARK: Chainer
 
-func chainer(_ document: JSON?, next: (String) -> Void) {
-    if let revisionNumber = document?["rev"].string {
+func chainer(_ document: ObjectDB?, next: (String) -> Void) {
+    if let revisionNumber = document?._rev {
         Log.info("revisionNumber is \(revisionNumber)")
         next(revisionNumber)
-    } else if let revisionNumber = document?["_rev"].string {
+    } else if let revisionNumber = document?._rev {
         Log.info("revisionNumber is \(revisionNumber)")
         next(revisionNumber)
     } else {
@@ -150,7 +145,7 @@ func chainer(_ document: JSON?, next: (String) -> Void) {
 // MARK: Create document
 
 func createDocument() {
-    database.create(json, callback: { (id: String?, rev: String?, document: JSON?, error: NSError?) in
+    database.create(objectDB, callback: { (document: ObjectDB?, error: NSError?) in
         if let error = error {
             Log.error(">> Oops something went wrong; could not persist document.")
             Log.error("Error: \(error.localizedDescription) Code: \(error.code)")
@@ -165,7 +160,7 @@ func createDocument() {
 // MARK: Read document
 
 func readDocument() {
-    database.retrieve(documentId as String, callback: { (document: JSON?, error: NSError?) in
+    database.retrieve(documentId as String, callback: { (document: ObjectDB?, error: NSError?) in
         if let error = error {
             Log.error("Oops something went wrong; could not read document.")
             Log.error("Error: \(error.localizedDescription) Code: \(error.code)")
@@ -183,8 +178,8 @@ func readDocument() {
 func updateDocument(revisionNumber: String) {
     //var json = JSON(data: jsonData!)
     //json["value"] = "value2"
-    database.update(documentId as String, rev: revisionNumber, document: json,
-        callback: { (rev: String?, document: JSON?, error: NSError?) in
+    database.update(documentId as String, rev: revisionNumber, document: objectDB,
+        callback: { (document: ObjectDB?, error: NSError?) in
             if let error = error {
                 Log.error(">> Oops something went wrong; could not update document.")
                 Log.error("Error: \(error.localizedDescription) Code: \(error.code)")

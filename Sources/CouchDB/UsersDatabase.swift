@@ -22,18 +22,6 @@ import KituraNet
 /// Represents a CouchDB database of users.
 public class UsersDatabase: Database {
 
-    public struct User: Codable {
-        public var name: String
-        public var password: String
-        public var type: String = "user"
-        public var roles: [String] = []
-        
-        public init(name: String, password: String) {
-            self.name = name
-            self.password = password
-        }
-    }
-
     /// Create new user by name and password.
     ///
     /// - parameters:
@@ -41,9 +29,9 @@ public class UsersDatabase: Database {
     ///     - password: Password String.
     ///     - callback: Callback containing the username, JSON response,
     ///                 and an NSError if one occurred.
-    public func createUser(_ document: User, callback: @escaping (String?, User?, NSError?) -> ()) {
-        let id = "org.couchdb.user:\(document.name)"
-        var doc: User?
+    public func createUser<T: Codable>(_ document: T, with name: String, callback: @escaping (String?, T?, NSError?) -> ()) {
+        let id = "org.couchdb.user:\(name)"
+        var doc: T?
         let requestOptions = CouchDBUtils.prepareRequest(connProperties,
                                                          method: "PUT",
                                                          path: "/_users/\(id)",
@@ -82,9 +70,9 @@ public class UsersDatabase: Database {
     /// - parameters:
     ///     - name: Name String of the desired user.
     ///     - callback: Callback containing the user JSON, or an NSError if one occurred.
-    public func getUser(name: String, callback: @escaping (User?, NSError?) -> ()) {
+    public func getUser<T: Decodable>(name: String, callback: @escaping (T?, NSError?) -> ()) {
         let id = "org.couchdb.user:\(name)"
-        retrieve(id, callback: { (doc: User?, error) in
+        retrieve(id, callback: { (doc: T?, error) in
             #if os(Linux)
                 callback(doc, error)
             #else

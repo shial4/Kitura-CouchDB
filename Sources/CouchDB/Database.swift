@@ -21,21 +21,6 @@ import KituraNet
 
 /// Represents a CouchDB database.
 public class Database {
-    private struct BulkUpdate<T: Encodable>: Encodable {
-        var new_edits: Bool
-        var docs: [T]
-        init(docs: [T], newEdits: Bool) {
-            self.docs = docs
-            self.new_edits = newEdits
-        }
-    }
-    
-    public struct BulkResponse: Decodable {
-        var _id: String?
-        var _rev: String?
-        var error: String?
-        var reason: String?
-    }
     
     /// Indicates when to update.
     public enum StaleOptions {
@@ -265,17 +250,14 @@ public class Database {
 	///                   results are returned in the same order as the supplied documents array.
 	/// - Parameter error: Request error if one occurred.
 	///
-    public func bulk<T: Encodable>(documents: [T], newEdits: Bool = true, callback: @escaping (_ json: BulkResponse?, _ error: NSError?) -> ()) {
+    public func bulk<T: Encodable, K: Decodable>(documents: T, newEdits: Bool = true, callback: @escaping (_ response: [K]?, _ error: NSError?) -> ()) {
 		// Prepare request options
 		let requestOptions = CouchDBUtils.prepareRequest(connProperties, method: "POST", path: "/\(escapedName)/_bulk_docs", hasBody: true)
-
-		// Create request body
-		let requestBody = BulkUpdate(docs: documents, newEdits: newEdits)
 
 		// Create bulk update request and send it
 		let req = HTTP.request(requestOptions) { response in
 			var error: NSError?
-			var documentsUpdateResult: BulkResponse?
+			var documentsUpdateResult: [K]?
 
 			if let response = response {
                 do {
@@ -297,7 +279,7 @@ public class Database {
 			callback(documentsUpdateResult, error)
 		}
         do {
-            req.end(try JSONEncoder().encode(requestBody))
+            req.end(try JSONEncoder().encode(documents))
         } catch let caughtError {
             #if os(Linux)
             callback(nil,NSError(domain: caughtError.localizedDescription, code: -1))
